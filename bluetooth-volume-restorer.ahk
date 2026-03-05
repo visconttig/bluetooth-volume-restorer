@@ -11,6 +11,8 @@ CheckInterval := 500
 JumpThreshold := 25
 TargetVolume := 80
 
+LastFixTime := 0
+
 LogFile := A_ScriptDir "\VolumeGuard.log"
 
 ; ==============================
@@ -41,6 +43,13 @@ SoundGet, CurrentVolume
 
 difference := LastVolume - CurrentVolume
 
+; Ignore changes if we recently forced the volume
+if (A_TickCount - LastFixTime < 2000)
+{
+    LastVolume := CurrentVolume
+    return
+}
+
 if (difference > JumpThreshold)
 {
     Log("Large volume drop detected: " . LastVolume . " -> " . CurrentVolume)
@@ -49,6 +58,8 @@ if (difference > JumpThreshold)
     SetTimer, RemoveToolTip, -2000
 
     SoundSet, %TargetVolume%
+
+    LastFixTime := A_TickCount
 
     Log("Volume restored to " . TargetVolume)
 }
