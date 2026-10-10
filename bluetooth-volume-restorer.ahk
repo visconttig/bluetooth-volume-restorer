@@ -24,6 +24,13 @@ SetBatchLines, -1
 ;   The only trigger is a playback-device change.
 ; ============================================================
 
+; CURRENT BEHAVIOR ADDENDUM
+;   The original device-change behavior above is preserved.
+;   An additional master-volume monitor now detects observed
+;   changes greater than MaxAcceptedVolumeStep and restores
+;   the last accepted volume. This applies to increases and
+;   decreases. See the volume-monitor sections below.
+
 #Include %A_ScriptDir%\VA.ahk
 
 
@@ -49,6 +56,15 @@ RetryInterval := 500
 ; Maximum number of verification attempts.
 RetryCount := 4
 
+; How often to check the Windows master volume.
+; A shorter interval improves responsiveness but uses more polling.
+VolumeCheckInterval := 50
+
+; Maximum accepted difference between observed volume samples.
+; Changes GREATER than this value trigger restoration.
+; Both increases and decreases are protected.
+MaxAcceptedVolumeStep := 5
+
 
 ; ============================================================
 ; STATE
@@ -68,12 +84,23 @@ else
     LastDeviceName := ""
 }
 
+; Baseline volume accepted as legitimate.
+SoundGet, LastAcceptedVolume
+
+; Guards against our own volume-restoration operations.
+VolumeGuardChangingVolume := false
+
+; Suspend volume monitoring while the original device-change
+; restoration and verification cycle is running.
+DeviceRestoreInProgress := false
+
 
 ; ============================================================
 ; START MONITORING
 ; ============================================================
 
 SetTimer, MonitorDevice, %CheckInterval%
+SetTimer, MonitorVolume, %VolumeCheckInterval%
 
 return
 
@@ -101,6 +128,10 @@ if (Device)
         ToolTip, Audio device changed:`n%CurrentDeviceName%
         SetTimer, RemoveToolTip, -3000
 
+        ; Suspend volume monitoring until the existing device
+        ; restoration and verification cycle has completed.
+        DeviceRestoreInProgress := true
+
         ; ----------------------------------------------------
         ; Give Windows time to finish changing the endpoint.
         ; ----------------------------------------------------
@@ -110,6 +141,53 @@ if (Device)
         ; Remember the new device.
         LastDeviceName := CurrentDeviceName
     }
+}
+
+return
+
+
+; ============================================================
+; TIMER: Monitor Master Volume
+; ============================================================
+
+MonitorVolume:
+
+; The existing device-change restoration takes priority.
+if (DeviceRestoreInProgress || VolumeGuardChangingVolume)
+{
+    return
+}
+
+SoundGet, CurrentVolume
+
+; Ignore invalid readings rather than corrupting the baseline.
+if CurrentVolume is not number
+{
+    return
+}
+
+; Compare against the last ACCEPTED volume, not the previous
+; raw sample. Suspicious values must never become the baseline.
+VolumeDifference := Abs(CurrentVolume - LastAcceptedVolume)
+
+if (VolumeDifference > MaxAcceptedVolumeStep)
+{
+    ; --------------------------------------------------------
+    ; Unexpected volume change detected.
+    ;
+    ; Restore the last accepted volume. Do NOT accept the
+    ; suspicious value, even temporarily.
+    ; --------------------------------------------------------
+
+    VolumeGuardChangingVolume := true
+    SoundSet, %LastAcceptedVolume%
+    VolumeGuardChangingVolume := false
+}
+else
+{
+    ; Accept small changes, including sequential user steps.
+    ; Exactly 5 percentage points is permitted.
+    LastAcceptedVolume := CurrentVolume
 }
 
 return
@@ -128,7 +206,13 @@ SetTimer, RestoreAfterDeviceChange, Off
 ; First volume restoration.
 ; ------------------------------------------------------------
 
+VolumeGuardChangingVolume := true
 SoundSet, %TargetVolume%
+VolumeGuardChangingVolume := false
+
+; Preserve the original device-change policy: TargetVolume
+; becomes the accepted baseline after this intentional change.
+LastAcceptedVolume := TargetVolume
 
 ; Start verification/retry cycle.
 RestoreAttempts := 1
@@ -153,8 +237,14 @@ SoundGet, VerifyVolume
 
 if (VerifyVolume != TargetVolume)
 {
+    VolumeGuardChangingVolume := true
     SoundSet, %TargetVolume%
+    VolumeGuardChangingVolume := false
 }
+
+; Keep the accepted baseline aligned with the existing
+; device-change restoration target.
+LastAcceptedVolume := TargetVolume
 
 RestoreAttempts++
 
@@ -165,6 +255,12 @@ RestoreAttempts++
 if (RestoreAttempts > RetryCount)
 {
     SetTimer, VerifyRestoredVolume, Off
+
+    ; Resume monitoring after the restoration cycle.
+    DeviceRestoreInProgress := false
+
+    ; Refresh the baseline from the actual reported volume.
+    SoundGet, LastAcceptedVolume
 }
 
 return
